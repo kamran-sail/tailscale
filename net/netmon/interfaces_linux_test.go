@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -113,4 +114,71 @@ func TestRouteLinuxNetlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("Got: %+v", d)
+}
+
+// test that link-local IPv4 counts as usable only on the default route
+func TestGetStateLinkLocalDefaultRoute(t *testing.T) {
+	ipnet := func(s string) net.Addr {
+		ip, ipnet, err := net.ParseCIDR(s)
+		ipnet.IP = ip
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ipnet
+	}
+
+	// Mock out the responses from netInterfaces()
+	tstest.Replace(t, &altNetInterfaces, func() ([]Interface, error) {
+		return []Interface{
+			{
+				Interface: &net.Interface{
+					Index: 1,
+					MTU:   1500,
+					Name:  "fake0",
+					Flags: net.FlagUp |
+						net.FlagBroadcast |
+						net.FlagMulticast |
+						net.FlagRunning,
+				},
+				AltAddrs: []net.Addr{
+					ipnet("169.254.100.2/30"),
+				},
+			},
+		}, nil
+	})
+
+	tests := []struct {
+		name string
+		buf  []byte
+		want bool
+	}{
+		{
+			name: "default_route",
+			buf: []byte("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n" +
+				"fake0\t00000000\t0164FEA9\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"),
+			want: true,
+		},
+		{
+			name: "no_default_route",
+			buf:  []byte("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"),
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tstest.Replace(t, &procNetRoutePath, filepath.Join(t.TempDir(), "route"))
+			err := os.WriteFile(procNetRoutePath, tt.buf, 0644)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			st, err := getState("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.HaveV4 != tt.want {
+				t.Errorf("HaveV4 = %v; want %v", st.HaveV4, tt.want)
+			}
+		})
+	}
 }

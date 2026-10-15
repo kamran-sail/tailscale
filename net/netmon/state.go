@@ -593,6 +593,7 @@ func getState(optTSInterfaceName string) (*State, error) {
 		InterfaceIPs: make(map[string][]netip.Prefix),
 		Interface:    make(map[string]Interface),
 	}
+	var linkLocalV4Ifs []string
 	if err := ForeachInterface(func(ni Interface, pfxs []netip.Prefix) {
 		isTSInterfaceName := optTSInterfaceName != "" && ni.Name == optTSInterfaceName
 		ifUp := ni.IsUp()
@@ -614,6 +615,9 @@ func getState(optTSInterfaceName string) (*State, error) {
 			}
 			s.HaveV6 = s.HaveV6 || isUsableV6(pfx.Addr())
 			s.HaveV4 = s.HaveV4 || isUsableV4(pfx.Addr())
+			if pfx.Addr().Is4() && pfx.Addr().IsLinkLocalUnicast() {
+				linkLocalV4Ifs = append(linkLocalV4Ifs, ni.Name)
+			}
 		}
 	}); err != nil {
 		return nil, err
@@ -621,6 +625,9 @@ func getState(optTSInterfaceName string) (*State, error) {
 
 	dr, _ := DefaultRoute()
 	s.DefaultRouteInterface = dr.InterfaceName
+
+	// Also count link-local IPv4 on the default route interface as usable.
+	s.HaveV4 = s.HaveV4 || slices.Contains(linkLocalV4Ifs, dr.InterfaceName)
 
 	// Populate description (for Windows, primarily) if present.
 	if desc := dr.InterfaceDesc; desc != "" {
